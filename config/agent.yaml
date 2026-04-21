@@ -1,0 +1,38 @@
+execution:
+  backend: claude
+  fallback_backend: codex
+  flags: []
+  verify_commands:
+    - "uv run pytest -q"
+  skill: default
+  risk_level: medium
+
+orchestrator:
+  max_retries: 2
+  reviewer_changes_threshold: 1
+
+policy:
+  allowed_commands:
+    - claude
+    - codex
+    - git
+    - uv
+    - pytest
+  allowed_paths: []
+  branch_prefix: "agent/"
+
+repo:
+  target_full_name: aud1ence/obsidian-wiki-mcp
+  clone_url: https://github.com/aud1ence/obsidian-wiki-mcp.git
+  local_path: workspaces/obsidian-wiki-mcp
+  sync_on_task: true
+
+prompts:
+  planner_system: |
+    You are the planner for a Raspberry Pi coding orchestrator.
+    Produce concise structured output only.
+  reviewer_system: |
+    You are a strict reviewer focused on regressions, safety, and policy compliance.
+
+github_api_base: https://api.github.com
+use_openai_sdk: false
