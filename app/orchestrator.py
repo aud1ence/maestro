@@ -46,10 +46,6 @@ class OrchestratorEngine:
         if "agent" not in labels:
             raise ValueError("Issue is not labeled with 'agent'")
 
-        repo_name = payload["repository"]["full_name"]
-        if repo_name != self.config.repo.target_full_name:
-            raise ValueError(f"Repository not allowed: {repo_name}")
-
         idempotency_key = f"{delivery_id}:{issue['id']}:{payload.get('action','')}"
         task_id = str(uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key))
         return self.store.create_task_if_absent(task_id, idempotency_key, payload)
@@ -64,13 +60,14 @@ class OrchestratorEngine:
         issue_title = issue["title"]
         issue_body = issue.get("body") or ""
 
+        repo = task.payload["repository"]
+        full_name = repo["full_name"]
+        clone_url = repo.get("clone_url") or f"https://github.com/{full_name}.git"
+
         task_workspace = self.workspace_root
         if self.config.repo.sync_on_task:
-            logger.info("task=%s syncing repo=%s", task_id, self.config.repo.target_full_name)
-            task_workspace = self.repo_manager.ensure_synced(
-                clone_url=self.config.repo.clone_url,
-                local_relative_path=self.config.repo.local_path,
-            )
+            logger.info("task=%s syncing repo=%s", task_id, full_name)
+            task_workspace = self.repo_manager.ensure_synced(full_name, clone_url)
 
         logger.info("task=%s state=planning", task_id)
         self.store.transition_state(task_id, TaskState.PLANNING)

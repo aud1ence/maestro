@@ -24,10 +24,7 @@ policy:
   branch_prefix: "agent/"
 
 repo:
-  target_full_name: aud1ence/obsidian-wiki-mcp
-  clone_url: https://github.com/aud1ence/obsidian-wiki-mcp.git
-  local_path: workspaces/obsidian-wiki-mcp
-  sync_on_task: true
+  sync_on_task: true  # clone/pull the repo before each task; workspace path = workspaces/<owner>/<repo>
 
 prompts:
   planner_system: |

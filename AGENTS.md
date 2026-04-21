@@ -41,30 +41,30 @@ Run `uv run pytest -q` as the verification step after each logical change.
 
 ---
 
-## Kiến trúc tổng quan
+## Architecture
 
-Tất cả AI intelligence delegate cho CLI agents — không có LLM agents với system prompts trong Python code. `app/agents.py` chỉ là CLI caller, không phải agent runner.
+All AI intelligence is delegated to CLI agents — no LLM agents with system prompts in Python. `app/agents.py` is a CLI caller, not an agent runner.
 
 ```
-AgentsFacade.plan()   → config.roles.planner.backend -p "<prompt>"
+AgentsFacade.plan()   → config.roles.planner.backend  -p "<prompt>"
 AgentsFacade.review() → config.roles.reviewer.backend -p "<prompt>"  (parse APPROVED/CHANGES_REQUESTED/NEEDS_HUMAN)
-CLIExecutor.execute() → config.roles.coder.backend   -p "<prompt>"   (called directly from orchestrator)
+CLIExecutor.execute() → config.roles.coder.backend    -p "<prompt>"  (called directly from orchestrator)
 ```
 
-Role → CLI backend mapping sống trong `config/agent.yaml`. Thêm/đổi CLI: chỉ sửa YAML.
+Role → CLI backend mapping lives in `config/agent.yaml`. To add or switch a CLI: edit YAML only.
 
 ## Project Structure
 
 - `app/server.py`: FastAPI entrypoint, AppContainer wiring.
 - `app/orchestrator.py`: Task lifecycle engine — state machine, retry loop, GitHub comment.
-- `app/agents.py`: `AgentsFacade` — gọi planner CLI và reviewer CLI, parse review decision.
+- `app/agents.py`: `AgentsFacade` — calls planner CLI and reviewer CLI, parses review decision.
 - `app/store.py`: SQLite task store (`data/tasks.sqlite`), state machine guard.
-- `app/config.py`: `AppConfig` với `RolesConfig` (per-role backend/flags), `PolicyConfig`.
-- `app/policy.py`: `PolicyGuard` — validate command/path trước khi chạy subprocess.
+- `app/config.py`: `AppConfig` with `RolesConfig` (per-role backend/flags), `PolicyConfig`.
+- `app/policy.py`: `PolicyGuard` — validates command/path before running subprocess.
 - `app/tools/cli_executor.py`: Subprocess runner, fallback backend, timeout, auth hints.
-- `app/tools/github_client.py`: GitHub issue comment + PR với role-based PAT.
-- `app/tools/repo_workspace.py`: clone/pull workspace manager.
-- `app/tools/wiki_context.py`: `WikiContextProvider` interface (null impl mặc định).
+- `app/tools/github_client.py`: GitHub issue comment + PR creation via single PAT.
+- `app/tools/repo_workspace.py`: clone/pull workspace manager; path derived as `workspaces/<owner>/<repo>`.
+- `app/tools/wiki_context.py`: `WikiContextProvider` interface (null impl by default).
 
 Config: `config/agent.yaml` — env template: `.env.example` — tests: `tests/` — workspaces: `workspaces/`.
 
@@ -72,30 +72,28 @@ Config: `config/agent.yaml` — env template: `.env.example` — tests: `tests/`
 
 ```bash
 uv sync                                                               # install dependencies
-cp .env.example .env                                                  # setup env lần đầu
+cp .env.example .env                                                  # first-time env setup
 uv run uvicorn app.server:app --host 0.0.0.0 --port 8000             # start API
 uv run pytest -q                                                      # full test suite
-uv run pytest -q tests/test_orchestrator_integration.py              # focused
+uv run pytest -q tests/test_orchestrator_integration.py              # integration only
 uv run pytest -q -k "test_happy_path_to_completed"                   # single test
 ```
 
-Target workspace (`workspaces/obsidian-wiki-mcp`): dùng `npm run build|test|lint` chỉ khi thay đổi workspace đó.
-
 ## CLI Command Convention
 
-Binary không phải `codex` → dùng `[backend, "-p", prompt, *flags]`.  
-Binary `codex` → dùng `["codex", "exec", prompt, *flags]`.
+Non-`codex` binaries → `[backend, "-p", prompt, *flags]`.
+`codex` → `["codex", "exec", prompt, *flags]`.
 
-Khi thêm CLI backend mới với syntax khác, update `CLIExecutor._build_command()`.
+When adding a new CLI backend with a different syntax, add a case to `CLIExecutor._build_command()`.
 
 ## Review Decision Protocol
 
-`AgentsFacade.review()` gọi reviewer CLI với prompt yêu cầu output keyword trên dòng đầu:
-- `APPROVED` → pipeline tiếp tục → COMPLETED
-- `CHANGES_REQUESTED` → retry (re-plan + re-code + re-review) nếu chưa quá threshold
-- `NEEDS_HUMAN` → dừng, escalate
+`AgentsFacade.review()` calls the reviewer CLI with a prompt that requests a keyword on the first line:
+- `APPROVED` → pipeline continues → COMPLETED
+- `CHANGES_REQUESTED` → retry (re-plan + re-code + re-review) if under threshold
+- `NEEDS_HUMAN` → stop, escalate
 
-`_parse_decision(text)` tìm keyword theo thứ tự `CHANGES_REQUESTED` → `NEEDS_HUMAN` → `APPROVED` (default).
+`_parse_decision(text)` searches for keywords in order: `CHANGES_REQUESTED` → `NEEDS_HUMAN` → `APPROVED` (default).
 
 ## State Machine
 
@@ -104,32 +102,32 @@ QUEUED → PLANNING → CODING → REVIEWING → COMPLETED
                    ↑          ↓              (terminal)
                    └──────────┘ (CHANGES_REQUESTED retry)
                               ↓
-                        NEEDS_HUMAN  (terminal, có thể → QUEUED qua retry endpoint)
+                        NEEDS_HUMAN  (terminal, can return to QUEUED via retry endpoint)
                         FAILED       (terminal)
 ```
 
-Transition guards sống trong `app/store.py:STATE_TRANSITIONS`. `CODING → PLANNING` được phép (retry). Khi thêm state mới: update dict này.
+Transition guards live in `app/store.py:STATE_TRANSITIONS`. `CODING → PLANNING` is explicitly allowed for retry. When adding a new state, update that dict.
 
 ## Testing Guidelines
 
-Framework: `pytest` với `pytest-asyncio`. Stub CLI/agent/GitHub trong integration tests (không call real subprocess).
+Framework: `pytest` with `pytest-asyncio`. Stub CLI/agent/GitHub in integration tests — no real subprocess calls.
 
-Test mỗi state transition quan trọng. Khi thêm role mới hoặc sửa pipeline logic: thêm test case trong `test_orchestrator_integration.py` với `StubAgents` + `StubCLI` tương ứng.
+Test every important state transition. When adding a new role or changing pipeline logic, add a test case in `test_orchestrator_integration.py` with the appropriate `StubAgents` + `StubCLI`.
 
-`StubAgents` phải implement `plan()` và `review()` — đây là contract của `AgentsFacade`.
+`StubAgents` must implement `plan()` and `review()` — these are the `AgentsFacade` contract.
 
 ## Security
 
-- Không commit secrets — tokens/webhook secret chỉ trong `.env`
-- `PolicyGuard.validate_command()` chạy trước mọi subprocess — `allowed_commands` trong YAML
-- Target repo hardcoded trong `config.repo.target_full_name` — không chạy CLI trên repo tùy ý
-- HMAC signature verify cho GitHub webhook (khi `GITHUB_WEBHOOK_SECRET` được set)
+- Never commit secrets — tokens and webhook secret belong in `.env` only
+- `PolicyGuard.validate_command()` runs before every subprocess — `allowed_commands` is the allowlist in YAML
+- Any repo can trigger the agent — `GITHUB_WEBHOOK_SECRET` is the only access control; always set it in production
+- HMAC signature verification runs on every webhook when `GITHUB_WEBHOOK_SECRET` is set
 
 ## Commit & PR Guidelines
 
 Conventional Commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`.
 
-PR cần:
-- Mô tả behavior thay đổi và module bị ảnh hưởng
+PRs must include:
+- Description of behavior change and affected modules
 - Test evidence (`uv run pytest -q` output)
-- API example nếu endpoint thay đổi
+- API example if an endpoint changed

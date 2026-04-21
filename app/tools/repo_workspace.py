@@ -8,16 +8,18 @@ class RepoWorkspaceManager:
     def __init__(self, root: Path):
         self.root = root.resolve()
 
-    def ensure_synced(self, clone_url: str, local_relative_path: str) -> Path:
-        workspace = (self.root / local_relative_path).resolve()
+    def ensure_synced(self, full_name: str, clone_url: str | None = None) -> Path:
+        """Clone or pull a repo. Path is derived as <root>/<owner>/<repo>."""
+        workspace = (self.root / full_name).resolve()
         workspace.parent.mkdir(parents=True, exist_ok=True)
+        actual_clone_url = clone_url or f"https://github.com/{full_name}.git"
 
         if (workspace / ".git").exists():
             self._run(["git", "fetch", "--all", "--prune"], workspace)
             self._run(["git", "pull", "--ff-only"], workspace)
             return workspace
 
-        self._run(["git", "clone", clone_url, str(workspace)], self.root)
+        self._run(["git", "clone", actual_clone_url, str(workspace)], workspace.parent)
         return workspace
 
     def _run(self, cmd: list[str], cwd: Path) -> None:

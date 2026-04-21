@@ -54,6 +54,7 @@ Any binary following `<name> -p <prompt>` works without code changes. `codex` is
 - Review decision parsing — reviewer outputs `APPROVED` / `CHANGES_REQUESTED` / `NEEDS_HUMAN` on the first line
 - Retry loop — `CHANGES_REQUESTED` triggers re-plan → re-code → re-review, up to `reviewer_changes_threshold` times
 - SQLite task store with idempotency key and state machine
+- Multi-repo support — any repo can send a webhook; workspace is isolated per repo at `workspaces/<owner>/<repo>`
 - GitHub issue comments via a single PAT (`GITHUB_TOKEN`)
 - Repo auto-sync (clone on first run, pull on subsequent runs)
 - Wiki context provider interface (null implementation by default)
@@ -65,9 +66,22 @@ Any binary following `<name> -p <prompt>` works without code changes. `codex` is
 ```bash
 uv sync
 cp .env.example .env
-# Set GITHUB_TOKEN, then authenticate each CLI (see CLI Auth section below)
+# Set GITHUB_TOKEN, authenticate each CLI (see CLI Auth below), then
+# install the webhook on any GitHub repo you want the agent to handle
 uv run uvicorn app.server:app --host 0.0.0.0 --port 8000
 ```
+
+## Multi-repo Support
+
+Any GitHub repository can trigger the agent — there is no hardcoded repo allowlist. Access control is via the HMAC webhook secret (`GITHUB_WEBHOOK_SECRET`). **Set this in production.**
+
+When a webhook arrives, the orchestrator:
+1. Verifies the HMAC signature (if `GITHUB_WEBHOOK_SECRET` is set)
+2. Checks that the issue has the `agent` label
+3. Clones or pulls the repo into `workspaces/<owner>/<repo>` (derived from `repository.full_name`)
+4. Runs the full pipeline in that workspace
+
+To add a new repo: install the webhook on that repo pointing to `POST /webhook/github`.
 
 ## Environment Variables
 
@@ -127,7 +141,7 @@ app/
     └── wiki_context.py   # WikiContextProvider interface (null impl by default)
 config/agent.yaml         # Roles, policy, repo, prompts, orchestrator settings
 data/tasks.sqlite         # Task persistence (auto-created)
-workspaces/               # Cloned target repos
+workspaces/               # Cloned repos, isolated per repo at workspaces/<owner>/<repo>
 ```
 
 ## Configuration (`config/agent.yaml`)
@@ -155,10 +169,7 @@ policy:
   branch_prefix: "agent/"
 
 repo:
-  target_full_name: owner/repo
-  clone_url: https://github.com/owner/repo.git
-  local_path: workspaces/repo
-  sync_on_task: true
+  sync_on_task: true  # workspace is auto-derived as workspaces/<owner>/<repo>
 
 execution:
   verify_commands:
@@ -184,7 +195,7 @@ Output does not match the requested format.
 ## Tests
 
 ```bash
-uv run pytest -q                                          # full suite (17 tests)
+uv run pytest -q                                          # full suite (18 tests)
 uv run pytest -q tests/test_orchestrator_integration.py  # integration only
 uv run pytest -q -k "test_happy_path_to_completed"       # single test
 ```

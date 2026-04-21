@@ -25,9 +25,6 @@ class PromptConfig(BaseModel):
 
 
 class RepoConfig(BaseModel):
-    target_full_name: str = "aud1ence/obsidian-wiki-mcp"
-    clone_url: str = "https://github.com/aud1ence/obsidian-wiki-mcp.git"
-    local_path: str = "workspaces/obsidian-wiki-mcp"
     sync_on_task: bool = True
 
 

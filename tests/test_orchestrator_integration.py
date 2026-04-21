@@ -42,11 +42,29 @@ class StubGitHub:
 class StubRepoManager:
     def __init__(self, path: Path):
         self.path = path
-        self.calls = []
+        self.calls: list[tuple[str, str | None]] = []
 
-    def ensure_synced(self, clone_url: str, local_relative_path: str) -> Path:
-        self.calls.append((clone_url, local_relative_path))
+    def ensure_synced(self, full_name: str, clone_url: str | None = None) -> Path:
+        self.calls.append((full_name, clone_url))
         return self.path
+
+
+def _make_payload(repo: str = "owner/repo", issue_id: int = 100, issue_number: int = 1, title: str = "Fix parser") -> dict:
+    return {
+        "action": "labeled",
+        "issue": {
+            "id": issue_id,
+            "number": issue_number,
+            "title": title,
+            "body": "Details",
+            "labels": [{"name": "agent"}],
+        },
+        "repository": {
+            "full_name": repo,
+            "clone_url": f"https://github.com/{repo}.git",
+        },
+        "sender": {"login": "alice"},
+    }
 
 
 @pytest.mark.asyncio
@@ -64,25 +82,40 @@ async def test_happy_path_to_completed(tmp_path: Path, app_config: AppConfig):
         repo_manager=repo_manager,
     )
 
-    payload = {
-        "action": "labeled",
-        "issue": {
-            "id": 100,
-            "number": 1,
-            "title": "Fix parser",
-            "body": "Please fix",
-            "labels": [{"name": "agent"}],
-        },
-        "repository": {"full_name": "aud1ence/obsidian-wiki-mcp"},
-        "sender": {"login": "alice"},
-    }
-    task, _ = engine.enqueue_from_webhook(payload, "d1")
-
+    task, _ = engine.enqueue_from_webhook(_make_payload("alice/my-project"), "d1")
     final = await engine.process_task(task.id)
 
     assert final.state == TaskState.COMPLETED
     assert len(github.comments) == 1
-    assert len(repo_manager.calls) == 1
+    assert repo_manager.calls == [("alice/my-project", "https://github.com/alice/my-project.git")]
+
+
+@pytest.mark.asyncio
+async def test_different_repos_get_separate_workspaces(tmp_path: Path, app_config: AppConfig):
+    store = TaskStore(tmp_path / "tasks.sqlite")
+    synced: list[str] = []
+
+    class TrackingRepoManager:
+        def ensure_synced(self, full_name: str, clone_url: str | None = None) -> Path:
+            synced.append(full_name)
+            return tmp_path / full_name
+
+    engine = OrchestratorEngine(
+        store=store,
+        config=app_config,
+        cli_executor=StubCLI(CLIResult("claude", 0, "done", "", ["claude"])),
+        agents=StubAgents(PipelineDecision.APPROVED),
+        github_client=StubGitHub(),
+        workspace_root=tmp_path,
+        repo_manager=TrackingRepoManager(),
+    )
+
+    task_a, _ = engine.enqueue_from_webhook(_make_payload("alice/repo-a", issue_id=1), "d-a")
+    task_b, _ = engine.enqueue_from_webhook(_make_payload("bob/repo-b", issue_id=2), "d-b")
+    await engine.process_task(task_a.id)
+    await engine.process_task(task_b.id)
+
+    assert synced == ["alice/repo-a", "bob/repo-b"]
 
 
 @pytest.mark.asyncio
@@ -102,20 +135,7 @@ async def test_reviewer_reject_over_threshold_goes_needs_human(tmp_path: Path, a
         repo_manager=StubRepoManager(tmp_path / "repo"),
     )
 
-    payload = {
-        "action": "labeled",
-        "issue": {
-            "id": 101,
-            "number": 2,
-            "title": "Fix lint",
-            "body": "Please fix lint",
-            "labels": [{"name": "agent"}],
-        },
-        "repository": {"full_name": "aud1ence/obsidian-wiki-mcp"},
-        "sender": {"login": "alice"},
-    }
-    task, _ = engine.enqueue_from_webhook(payload, "d2")
-
+    task, _ = engine.enqueue_from_webhook(_make_payload(issue_id=101, issue_number=2, title="Fix lint"), "d2")
     final = await engine.process_task(task.id)
 
     assert final.state == TaskState.NEEDS_HUMAN
@@ -130,36 +150,22 @@ async def test_claude_fail_codex_fallback_via_stub(tmp_path: Path, app_config: A
             return CLIResult("codex", 0, "fallback ok", "", ["codex"])
 
     store = TaskStore(tmp_path / "tasks.sqlite")
-    github = StubGitHub()
     engine = OrchestratorEngine(
         store=store,
         config=app_config,
         cli_executor=FallbackCLI(),
         agents=StubAgents(PipelineDecision.APPROVED),
-        github_client=github,
+        github_client=StubGitHub(),
         workspace_root=tmp_path,
         repo_manager=StubRepoManager(tmp_path / "repo"),
     )
 
-    payload = {
-        "action": "labeled",
-        "issue": {
-            "id": 102,
-            "number": 3,
-            "title": "Do fallback",
-            "body": "Ensure fallback",
-            "labels": [{"name": "agent"}],
-        },
-        "repository": {"full_name": "aud1ence/obsidian-wiki-mcp"},
-        "sender": {"login": "alice"},
-    }
-    task, _ = engine.enqueue_from_webhook(payload, "d3")
-
+    task, _ = engine.enqueue_from_webhook(_make_payload(issue_id=102, issue_number=3, title="Do fallback"), "d3")
     final = await engine.process_task(task.id)
     assert final.state == TaskState.COMPLETED
 
 
-def test_reject_non_target_repo(tmp_path: Path, app_config: AppConfig):
+def test_webhook_without_agent_label_rejected(tmp_path: Path, app_config: AppConfig):
     store = TaskStore(tmp_path / "tasks.sqlite")
     engine = OrchestratorEngine(
         store=store,
@@ -173,16 +179,10 @@ def test_reject_non_target_repo(tmp_path: Path, app_config: AppConfig):
 
     payload = {
         "action": "labeled",
-        "issue": {
-            "id": 103,
-            "number": 4,
-            "title": "Nope",
-            "body": "Wrong repo",
-            "labels": [{"name": "agent"}],
-        },
-        "repository": {"full_name": "someone/else"},
+        "issue": {"id": 200, "number": 9, "title": "No label", "body": "", "labels": []},
+        "repository": {"full_name": "anyone/any-repo"},
         "sender": {"login": "alice"},
     }
 
-    with pytest.raises(ValueError):
-        engine.enqueue_from_webhook(payload, "d4")
+    with pytest.raises(ValueError, match="agent"):
+        engine.enqueue_from_webhook(payload, "d-nolabel")
