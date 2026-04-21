@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -29,9 +30,14 @@ class AppContainer:
         self.policy_guard = PolicyGuard(self.config.policy, workspace_root)
         self.cli_executor = CLIExecutor(self.policy_guard, workspace_root)
         self.agents = AgentsFacade(self.config)
+        default_env = self.config.github_auth.default_token_env
+        issue_env = self.config.github_auth.issue_comment_token_env
+        pr_env = self.config.github_auth.pull_request_token_env
         self.github_client = GitHubClient(
-            token=os.getenv("GITHUB_TOKEN"),
             api_base=self.config.github_api_base,
+            default_token=os.getenv(default_env),
+            issue_comment_token=os.getenv(issue_env),
+            pull_request_token=os.getenv(pr_env),
         )
         self.engine = OrchestratorEngine(
             store=self.store,
@@ -52,6 +58,18 @@ def create_app(workspace_root: Path | None = None) -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/health/readiness")
+    async def readiness() -> dict[str, object]:
+        claude = _check_claude_auth()
+        codex = _check_codex_auth()
+        gh = _github_auth_readiness(container.config)
+        all_ok = claude["authenticated"] and codex["authenticated"] and gh["issue_comment_token_configured"]
+        return {
+            "status": "ok" if all_ok else "degraded",
+            "cli": {"claude": claude, "codex": codex},
+            "github": gh,
+        }
 
     @app.get("/tasks/{task_id}", response_model=TaskResponse)
     async def get_task(task_id: str) -> TaskResponse:
@@ -122,6 +140,68 @@ def _verify_signature(payload: bytes, provided_sig: str, secret: str) -> None:
     expected = "sha256=" + hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, provided_sig):
         raise HTTPException(status_code=401, detail="Invalid signature")
+
+
+def _run_auth_status(command: list[str], timeout_seconds: int = 8) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except FileNotFoundError:
+        return 127, "binary not found"
+    except subprocess.TimeoutExpired:
+        return 124, f"timed out after {timeout_seconds}s"
+    output = f"{completed.stdout}\n{completed.stderr}".strip()
+    return completed.returncode, output
+
+
+def _check_claude_auth() -> dict[str, object]:
+    rc, output = _run_auth_status(["claude", "auth", "status"])
+    is_logged_in = rc == 0 and '"loggedIn": true' in output
+    status_summary = "logged_in" if is_logged_in else "not_logged_in"
+    return {
+        "installed": rc != 127,
+        "authenticated": is_logged_in,
+        "status": status_summary,
+        "check_command": "claude auth status",
+        "login_command": "claude auth login",
+        "login_hint": "Run login command to get browser/device URL for authentication.",
+    }
+
+
+def _check_codex_auth() -> dict[str, object]:
+    rc, output = _run_auth_status(["codex", "login", "status"])
+    is_logged_in = rc == 0 and "Logged in" in output
+    status_summary = "logged_in" if is_logged_in else "not_logged_in"
+    return {
+        "installed": rc != 127,
+        "authenticated": is_logged_in,
+        "status": status_summary,
+        "check_command": "codex login status",
+        "login_command": "codex login --device-auth",
+        "login_hint": "Run login command to get browser/device URL (or use --with-api-key).",
+    }
+
+
+def _github_auth_readiness(config: AppConfig) -> dict[str, object]:
+    default_env = config.github_auth.default_token_env
+    issue_env = config.github_auth.issue_comment_token_env
+    pr_env = config.github_auth.pull_request_token_env
+    default_set = bool(os.getenv(default_env))
+    issue_set = bool(os.getenv(issue_env))
+    pr_set = bool(os.getenv(pr_env))
+    return {
+        "default_token_env": default_env,
+        "issue_comment_token_env": issue_env,
+        "pull_request_token_env": pr_env,
+        "default_token_configured": default_set,
+        "issue_comment_token_configured": issue_set or default_set,
+        "pull_request_token_configured": pr_set or default_set,
+    }
 
 
 app = create_app()

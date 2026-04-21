@@ -35,4 +35,8 @@ prompts:
     You are a strict reviewer focused on regressions, safety, and policy compliance.
 
 github_api_base: https://api.github.com
+github_auth:
+  default_token_env: GITHUB_TOKEN
+  issue_comment_token_env: GITHUB_ISSUE_TOKEN
+  pull_request_token_env: GITHUB_PR_TOKEN
 use_openai_sdk: false

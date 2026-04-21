@@ -31,12 +31,19 @@ class RepoConfig(BaseModel):
     sync_on_task: bool = True
 
 
+class GitHubAuthConfig(BaseModel):
+    default_token_env: str = "GITHUB_TOKEN"
+    issue_comment_token_env: str = "GITHUB_ISSUE_TOKEN"
+    pull_request_token_env: str = "GITHUB_PR_TOKEN"
+
+
 class AppConfig(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     prompts: PromptConfig = Field(default_factory=PromptConfig)
     repo: RepoConfig = Field(default_factory=RepoConfig)
+    github_auth: GitHubAuthConfig = Field(default_factory=GitHubAuthConfig)
     github_api_base: str = "https://api.github.com"
     use_openai_sdk: bool = False
 
