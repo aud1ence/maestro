@@ -32,9 +32,21 @@ class RepoConfig(BaseModel):
 
 
 class GitHubAuthConfig(BaseModel):
-    default_token_env: str = "GITHUB_TOKEN"
-    issue_comment_token_env: str = "GITHUB_ISSUE_TOKEN"
-    pull_request_token_env: str = "GITHUB_PR_TOKEN"
+    token_env: str = "GITHUB_TOKEN"
+
+
+class RoleConfig(BaseModel):
+    backend: str
+    fallback_backend: str | None = None
+    flags: list[str] = Field(default_factory=list)
+
+
+class RolesConfig(BaseModel):
+    planner: RoleConfig = Field(default_factory=lambda: RoleConfig(backend="claude"))
+    coder: RoleConfig = Field(default_factory=lambda: RoleConfig(backend="claude", fallback_backend="codex"))
+    reviewer: RoleConfig = Field(default_factory=lambda: RoleConfig(backend="codex"))
+    docs: RoleConfig | None = None
+    memory: RoleConfig | None = None
 
 
 class AppConfig(BaseModel):
@@ -44,6 +56,7 @@ class AppConfig(BaseModel):
     prompts: PromptConfig = Field(default_factory=PromptConfig)
     repo: RepoConfig = Field(default_factory=RepoConfig)
     github_auth: GitHubAuthConfig = Field(default_factory=GitHubAuthConfig)
+    roles: RolesConfig = Field(default_factory=RolesConfig)
     github_api_base: str = "https://api.github.com"
     use_openai_sdk: bool = False
 

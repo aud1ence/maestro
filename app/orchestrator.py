@@ -77,13 +77,14 @@ class OrchestratorEngine:
         context = await self.wiki_context.get_context(issue_title, issue_body)
         plan = await self.agents.plan(issue_title, issue_body, context)
 
-        logger.info("task=%s state=coding", task_id)
+        logger.info("task=%s state=coding backend=%s", task_id, self.config.roles.coder.backend)
         self.store.transition_state(task_id, TaskState.CODING)
+        coder = self.config.roles.coder
         coding_result = await self.cli_executor.execute(
             prompt=plan.coding_prompt,
-            backend=self.config.execution.backend,
-            fallback_backend=self.config.execution.fallback_backend,
-            flags=self.config.execution.flags,
+            backend=coder.backend,
+            fallback_backend=coder.fallback_backend,
+            flags=coder.flags,
             workspace=task_workspace,
         )
 
@@ -91,7 +92,7 @@ class OrchestratorEngine:
         if verify_failure:
             coding_result.stderr = f"{coding_result.stderr}\n{verify_failure}".strip()
 
-        logger.info("task=%s state=reviewing", task_id)
+        logger.info("task=%s state=reviewing backend=%s", task_id, self.config.roles.reviewer.backend)
         self.store.transition_state(task_id, TaskState.REVIEWING)
         review = await self.agents.review(
             task_summary=plan.summary,
@@ -128,9 +129,7 @@ class OrchestratorEngine:
                 last_error="Reviewer requested changes",
                 increment_retry=True,
             )
-            self.store.transition_state(task_id, TaskState.REVIEWING)
-            self.store.transition_state(task_id, TaskState.NEEDS_HUMAN, last_error="Manual intervention required")
-            return self.store.get_task(task_id)  # type: ignore[return-value]
+            return await self.process_task(task_id)
 
         reason = "Reviewer marked as needs_human"
         self.store.transition_state(task_id, TaskState.NEEDS_HUMAN, last_error=reason)
@@ -142,8 +141,7 @@ class OrchestratorEngine:
         return self.store.get_task(task_id)  # type: ignore[return-value]
 
     def retry_task(self, task_id: str) -> TaskRecord:
-        task = self.store.reset_for_retry(task_id)
-        return task
+        return self.store.reset_for_retry(task_id)
 
     def _run_verify_commands(self, workspace: Path) -> str | None:
         for cmd in self.config.execution.verify_commands:

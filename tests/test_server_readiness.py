@@ -19,10 +19,14 @@ def test_check_codex_auth_reports_logged_in(monkeypatch):
     assert result["authenticated"] is True
 
 
-def test_github_auth_readiness_by_role(monkeypatch):
-    monkeypatch.setenv("GITHUB_ISSUE_TOKEN", "issue")
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.delenv("GITHUB_PR_TOKEN", raising=False)
+def test_github_auth_readiness_configured(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
     result = _github_auth_readiness(AppConfig())
-    assert result["issue_comment_token_configured"] is True
-    assert result["pull_request_token_configured"] is False
+    assert result["configured"] is True
+    assert result["token_env"] == "GITHUB_TOKEN"
+
+
+def test_github_auth_readiness_not_configured(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    result = _github_auth_readiness(AppConfig())
+    assert result["configured"] is False

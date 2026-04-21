@@ -15,6 +15,8 @@ policy:
   allowed_commands:
     - claude
     - codex
+    - kiro-cli
+    - gemini
     - git
     - uv
     - pytest
@@ -35,8 +37,25 @@ prompts:
     You are a strict reviewer focused on regressions, safety, and policy compliance.
 
 github_api_base: https://api.github.com
-github_auth:
-  default_token_env: GITHUB_TOKEN
-  issue_comment_token_env: GITHUB_ISSUE_TOKEN
-  pull_request_token_env: GITHUB_PR_TOKEN
 use_openai_sdk: false
+
+# Role → CLI backend mapping. Switch any role independently.
+# Supported CLIs: claude, codex, kiro-cli, gemini (any CLI using `-p <prompt>`)
+roles:
+  planner:
+    backend: claude
+    fallback_backend: null
+    flags: []
+  coder:
+    backend: claude
+    fallback_backend: codex
+    flags: ["--allowedTools", "Bash,Read,Write,Edit"]
+  reviewer:
+    backend: codex
+    flags: []
+  docs:
+    backend: gemini
+    flags: []
+  memory:
+    backend: kiro-cli
+    flags: []

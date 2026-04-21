@@ -29,15 +29,10 @@ class AppContainer:
         self.store = TaskStore(db_path)
         self.policy_guard = PolicyGuard(self.config.policy, workspace_root)
         self.cli_executor = CLIExecutor(self.policy_guard, workspace_root)
-        self.agents = AgentsFacade(self.config)
-        default_env = self.config.github_auth.default_token_env
-        issue_env = self.config.github_auth.issue_comment_token_env
-        pr_env = self.config.github_auth.pull_request_token_env
+        self.agents = AgentsFacade(self.config, self.cli_executor)
         self.github_client = GitHubClient(
             api_base=self.config.github_api_base,
-            default_token=os.getenv(default_env),
-            issue_comment_token=os.getenv(issue_env),
-            pull_request_token=os.getenv(pr_env),
+            token=os.getenv(self.config.github_auth.token_env),
         )
         self.engine = OrchestratorEngine(
             store=self.store,
@@ -64,7 +59,7 @@ def create_app(workspace_root: Path | None = None) -> FastAPI:
         claude = _check_claude_auth()
         codex = _check_codex_auth()
         gh = _github_auth_readiness(container.config)
-        all_ok = claude["authenticated"] and codex["authenticated"] and gh["issue_comment_token_configured"]
+        all_ok = claude["authenticated"] and codex["authenticated"] and gh["configured"]
         return {
             "status": "ok" if all_ok else "degraded",
             "cli": {"claude": claude, "codex": codex},
@@ -188,19 +183,10 @@ def _check_codex_auth() -> dict[str, object]:
 
 
 def _github_auth_readiness(config: AppConfig) -> dict[str, object]:
-    default_env = config.github_auth.default_token_env
-    issue_env = config.github_auth.issue_comment_token_env
-    pr_env = config.github_auth.pull_request_token_env
-    default_set = bool(os.getenv(default_env))
-    issue_set = bool(os.getenv(issue_env))
-    pr_set = bool(os.getenv(pr_env))
+    token_env = config.github_auth.token_env
     return {
-        "default_token_env": default_env,
-        "issue_comment_token_env": issue_env,
-        "pull_request_token_env": pr_env,
-        "default_token_configured": default_set,
-        "issue_comment_token_configured": issue_set or default_set,
-        "pull_request_token_configured": pr_set or default_set,
+        "token_env": token_env,
+        "configured": bool(os.getenv(token_env)),
     }
 
 

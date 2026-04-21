@@ -12,7 +12,7 @@ from app.schemas import TaskState
 STATE_TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.QUEUED: {TaskState.PLANNING, TaskState.FAILED, TaskState.NEEDS_HUMAN},
     TaskState.PLANNING: {TaskState.CODING, TaskState.FAILED, TaskState.NEEDS_HUMAN},
-    TaskState.CODING: {TaskState.REVIEWING, TaskState.FAILED, TaskState.NEEDS_HUMAN},
+    TaskState.CODING: {TaskState.PLANNING, TaskState.REVIEWING, TaskState.FAILED, TaskState.NEEDS_HUMAN},
     TaskState.REVIEWING: {TaskState.COMPLETED, TaskState.CODING, TaskState.FAILED, TaskState.NEEDS_HUMAN},
     TaskState.COMPLETED: set(),
     TaskState.FAILED: set(),

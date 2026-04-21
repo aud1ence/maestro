@@ -29,7 +29,7 @@ def app_config() -> AppConfig:
         ),
         orchestrator=OrchestratorConfig(max_retries=2, reviewer_changes_threshold=1),
         policy=PolicyConfig(
-            allowed_commands=["claude", "codex", "uv", "pytest", "git"],
+            allowed_commands=["claude", "codex", "kiro-cli", "gemini", "uv", "pytest", "git"],
             allowed_paths=[],
             branch_prefix="agent/",
         ),

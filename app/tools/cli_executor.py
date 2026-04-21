@@ -50,11 +50,10 @@ class CLIExecutor:
         return await self._run_command(cmd, timeout_seconds, self.workspace)
 
     def _build_command(self, backend: str, prompt: str, flags: list[str]) -> list[str]:
-        if backend == "claude":
-            return ["claude", "-p", prompt, *flags]
         if backend == "codex":
             return ["codex", "exec", prompt, *flags]
-        raise PolicyViolationError(f"Unsupported backend: {backend}")
+        # claude, kiro-cli, gemini, and any CLI following the `-p <prompt>` convention
+        return [backend, "-p", prompt, *flags]
 
     async def _run_command(self, command: list[str], timeout_seconds: int, workspace: Path) -> CLIResult:
         self.policy_guard.validate_command(command)
@@ -108,6 +107,20 @@ class CLIExecutor:
             hint = (
                 "Authentication required for Codex CLI. "
                 "Run `codex login --device-auth` (or `codex login --with-api-key`) and retry."
+            )
+            return f"{stderr}\n{hint}".strip()
+
+        if backend == "kiro-cli" and ("not logged in" in combined or "auth" in combined):
+            hint = (
+                "Authentication required for Kiro CLI. "
+                "Run `kiro-cli auth login` and retry."
+            )
+            return f"{stderr}\n{hint}".strip()
+
+        if backend == "gemini" and ("not logged in" in combined or "auth" in combined or "unauthorized" in combined):
+            hint = (
+                "Authentication required for Gemini CLI. "
+                "Run `gemini auth login` and retry."
             )
             return f"{stderr}\n{hint}".strip()
 
