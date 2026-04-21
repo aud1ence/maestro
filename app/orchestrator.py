@@ -38,7 +38,7 @@ class OrchestratorEngine:
         self.github_client = github_client
         self.workspace_root = workspace_root
         self.wiki_context = wiki_context or NullWikiContextProvider()
-        self.repo_manager = repo_manager or RepoWorkspaceManager(workspace_root)
+        self.repo_manager = repo_manager or RepoWorkspaceManager(workspace_root / "workspaces")
 
     def enqueue_from_webhook(self, payload: dict[str, Any], delivery_id: str) -> tuple[TaskRecord, bool]:
         issue = payload["issue"]
