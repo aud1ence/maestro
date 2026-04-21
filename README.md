@@ -1,10 +1,10 @@
 # pi5-sdk-orchestrator
 
-Hybrid orchestrator cho Raspberry Pi 5: **tất cả roles (Planner, Coder, Reviewer, Docs, Memory) đều delegate sang CLI agents** (claude, codex, kiro-cli, gemini). Role → CLI backend được config trong YAML, switch không cần sửa code.
+CLI-native orchestrator for Raspberry Pi 5. All AI roles (Planner, Coder, Reviewer, Docs, Memory) delegate to external CLI agents — no LLM agents with system prompts in Python. Role → CLI backend is config, not code.
 
-Pipeline: `GitHub webhook → planning (CLI) → coding (CLI) → reviewing (CLI) → completed | retry | needs_human`
+Pipeline: `GitHub webhook → PLANNING (CLI) → CODING (CLI) → REVIEWING (CLI) → COMPLETED | retry | NEEDS_HUMAN`
 
-## Kiến trúc
+## Architecture
 
 ```
 GitHub Issue (label "agent")
@@ -14,86 +14,90 @@ POST /webhook/github  (FastAPI, HMAC signature verify)
          │
          ▼
 OrchestratorEngine
-  ├── PLANNING  → AgentsFacade.plan()  → config.roles.planner.backend -p "..."
+  ├── PLANNING  → AgentsFacade.plan()   → config.roles.planner.backend -p "..."
   ├── CODING    → CLIExecutor.execute() → config.roles.coder.backend   -p "..."
   └── REVIEWING → AgentsFacade.review() → config.roles.reviewer.backend -p "..."
          │
-         ├─ APPROVED      → TaskState.COMPLETED + GitHub comment
-         ├─ CHANGES_REQUESTED (retry < threshold) → re-run từ PLANNING
-         └─ CHANGES_REQUESTED (retry ≥ threshold) → TaskState.NEEDS_HUMAN
+         ├─ APPROVED                          → COMPLETED + GitHub comment
+         ├─ CHANGES_REQUESTED (retry < limit) → loop back to PLANNING
+         ├─ CHANGES_REQUESTED (retry ≥ limit) → NEEDS_HUMAN
+         └─ NEEDS_HUMAN                       → NEEDS_HUMAN + GitHub comment
 ```
 
-## Role → CLI mapping (config/agent.yaml)
+## Role → CLI Mapping
+
+Configured in `config/agent.yaml`. Switch any role's CLI by editing one line — no code changes needed.
 
 ```yaml
 roles:
   planner:
-    backend: kiro-cli      # kiro-cli -p "decompose issue..."
+    backend: kiro-cli # kiro-cli -p "decompose issue..."
     fallback_backend: claude
   coder:
-    backend: claude        # claude -p "..." --allowedTools Bash,Read,Write,Edit
+    backend: claude # claude -p "..." --allowedTools Bash,Read,Write,Edit
     fallback_backend: codex
+    flags: ["--allowedTools", "Bash,Read,Write,Edit"]
   reviewer:
-    backend: codex         # codex exec "review result... Output: APPROVED|CHANGES_REQUESTED|NEEDS_HUMAN"
+    backend: codex # codex exec "review... APPROVED|CHANGES_REQUESTED|NEEDS_HUMAN"
   docs:
-    backend: gemini        # optional
+    backend: gemini # optional — not yet wired into pipeline
   memory:
-    backend: kiro-cli      # optional
+    backend: kiro-cli # optional — not yet wired into pipeline
 ```
 
-Thêm CLI mới: bất kỳ binary nào theo convention `<name> -p <prompt>` hoạt động ngay — không cần code thêm. `codex` là exception duy nhất dùng `codex exec <prompt>`.
+Any binary following `<name> -p <prompt>` works without code changes. `codex` is the only exception — it uses `codex exec <prompt>` (handled in `CLIExecutor._build_command()`).
 
 ## Features
 
-- Role-based CLI routing — mỗi role có backend riêng, switch bằng YAML
-- Policy guard — chỉ các binary trong `allowed_commands` được phép chạy
-- Review decision parsing — reviewer CLI output `APPROVED` / `CHANGES_REQUESTED` / `NEEDS_HUMAN` trên dòng đầu
-- Retry loop — `CHANGES_REQUESTED` → re-plan → re-code → re-review, tối đa `reviewer_changes_threshold` lần
-- SQLite task store với idempotency key và state machine (`queued → planning → coding → reviewing → completed|failed|needs_human`)
-- GitHub issue comment + role-based PAT (issue comment token / PR token tách biệt)
-- Repo auto-sync (clone lần đầu, pull những lần sau)
-- Wiki context provider interface
-- CLI auth diagnostics — gợi ý login command khi CLI chưa auth
-- Readiness endpoint — check auth status từng CLI + GitHub token
+- Role-based CLI routing — each role has its own `backend`, `fallback_backend`, and `flags`
+- Policy guard — only binaries listed in `allowed_commands` can be executed
+- Review decision parsing — reviewer outputs `APPROVED` / `CHANGES_REQUESTED` / `NEEDS_HUMAN` on the first line
+- Retry loop — `CHANGES_REQUESTED` triggers re-plan → re-code → re-review, up to `reviewer_changes_threshold` times
+- SQLite task store with idempotency key and state machine
+- GitHub issue comments via a single PAT (`GITHUB_TOKEN`)
+- Repo auto-sync (clone on first run, pull on subsequent runs)
+- Wiki context provider interface (null implementation by default)
+- CLI auth diagnostics — appends login hint to task stderr when a CLI is not authenticated
+- Readiness endpoint — reports auth status for each CLI and GitHub token
 
 ## Quick Start
 
 ```bash
 uv sync
 cp .env.example .env
-# Điền GITHUB_ISSUE_TOKEN, sau đó đăng nhập CLI (xem CLI Auth Check bên dưới)
+# Set GITHUB_TOKEN, then authenticate each CLI (see CLI Auth section below)
 uv run uvicorn app.server:app --host 0.0.0.0 --port 8000
 ```
 
 ## Environment Variables
 
 ```bash
-# One PAT with repo scope covers both issue comments and PR creation
+# GitHub personal access token — repo scope covers issue comments and PR creation
 GITHUB_TOKEN=
 
-# Webhook HMAC secret (optional — skipped if empty)
+# Webhook HMAC secret — set in GitHub repo settings → Webhooks (optional, skipped if empty)
 GITHUB_WEBHOOK_SECRET=
 
-# CLI tools use their own auth (OAuth/device auth) — see CLI Auth Check below
+# CLI tools authenticate via their own OAuth/device auth flows — see CLI Auth below
 # Optional: use API key instead of device auth for codex
 OPENAI_API_KEY=
 ```
 
 ## API
 
-| Method | Path | Mô tả |
-|--------|------|-------|
-| `POST` | `/webhook/github` | Nhận GitHub Issue webhook |
-| `GET`  | `/tasks/{id}` | Xem trạng thái task |
-| `POST` | `/tasks/{id}/retry` | Retry task ở needs_human |
-| `GET`  | `/health` | Liveness check |
-| `GET`  | `/health/readiness` | CLI auth + GitHub token readiness |
+| Method | Path                | Description                            |
+| ------ | ------------------- | -------------------------------------- |
+| `POST` | `/webhook/github`   | Receive GitHub Issue webhook           |
+| `GET`  | `/tasks/{id}`       | Get task state and result              |
+| `POST` | `/tasks/{id}/retry` | Reset a `needs_human` task to `queued` |
+| `GET`  | `/health`           | Liveness check                         |
+| `GET`  | `/health/readiness` | CLI auth status + GitHub token check   |
 
 ```bash
-# Kiểm tra readiness
+# Check readiness
 curl -s http://localhost:8000/health/readiness | python3 -m json.tool
 
-# Gửi webhook test
+# Send a test webhook
 curl -X POST http://localhost:8000/webhook/github \
   -H "Content-Type: application/json" \
   -H "X-GitHub-Delivery: test-001" \
@@ -105,33 +109,33 @@ curl -X POST http://localhost:8000/webhook/github \
   }'
 ```
 
-## Cấu trúc project
+## Project Structure
 
 ```
 app/
-├── server.py         # FastAPI endpoints + AppContainer wiring
-├── orchestrator.py   # Pipeline engine (planning → coding → reviewing → state)
-├── agents.py         # AgentsFacade — gọi CLI cho plan() và review()
-├── config.py         # AppConfig với RolesConfig (per-role backend)
-├── policy.py         # PolicyGuard — command/path allowlist
-├── schemas.py        # TaskState, PipelineDecision, ExecutionConfig
-├── store.py          # SQLite TaskStore + state machine
+├── server.py             # FastAPI endpoints + AppContainer wiring
+├── orchestrator.py       # Pipeline engine (planning → coding → reviewing → outcome)
+├── agents.py             # AgentsFacade — CLI caller for plan() and review()
+├── config.py             # AppConfig, RolesConfig (per-role backend/flags)
+├── policy.py             # PolicyGuard — command and path allowlist
+├── schemas.py            # TaskState, PipelineDecision, ExecutionConfig
+├── store.py              # SQLite TaskStore + state machine
 └── tools/
-    ├── cli_executor.py   # Subprocess runner với timeout, fallback, auth hints
-    ├── github_client.py  # GitHub API (comment, PR) với role-based PAT
+    ├── cli_executor.py   # Subprocess runner with timeout, fallback, auth hints
+    ├── github_client.py  # GitHub API (issue comment, PR creation)
     ├── repo_workspace.py # clone/pull workspace manager
-    └── wiki_context.py   # WikiContextProvider interface
+    └── wiki_context.py   # WikiContextProvider interface (null impl by default)
 config/agent.yaml         # Roles, policy, repo, prompts, orchestrator settings
 data/tasks.sqlite         # Task persistence (auto-created)
 workspaces/               # Cloned target repos
 ```
 
-## Cấu hình chi tiết (config/agent.yaml)
+## Configuration (`config/agent.yaml`)
 
 ```yaml
 roles:
   planner:
-    backend: claude        # CLI binary name
+    backend: claude
     fallback_backend: null
     flags: []
   coder:
@@ -144,7 +148,7 @@ roles:
 
 orchestrator:
   max_retries: 2
-  reviewer_changes_threshold: 1  # số lần CHANGES_REQUESTED trước khi → needs_human
+  reviewer_changes_threshold: 1 # CHANGES_REQUESTED retries before escalating to needs_human
 
 policy:
   allowed_commands: [claude, codex, kiro-cli, gemini, git, uv, pytest]
@@ -158,49 +162,58 @@ repo:
 
 execution:
   verify_commands:
-    - "uv run pytest -q"   # chạy sau coding, stderr → CHANGES_REQUESTED
+    - "uv run pytest -q" # runs after coding; non-zero exit feeds into reviewer as failure context
 ```
 
 ## Review Decision Protocol
 
-Reviewer CLI nhận prompt yêu cầu output `APPROVED`, `CHANGES_REQUESTED`, hoặc `NEEDS_HUMAN` trên dòng đầu tiên. `AgentsFacade._parse_decision()` tìm keyword trong stdout.
+The reviewer CLI is prompted to output one of three keywords on the first line:
 
 ```
 APPROVED
 Task completed correctly. README section added as requested.
 ```
 
+```
+CHANGES_REQUESTED
+Output does not match the requested format.
+```
+
+`_parse_decision()` searches for keywords in priority order: `CHANGES_REQUESTED` → `NEEDS_HUMAN` → `APPROVED` (default).
+
 ## Tests
 
 ```bash
-uv run pytest -q                                      # full suite (16 tests)
+uv run pytest -q                                          # full suite (17 tests)
 uv run pytest -q tests/test_orchestrator_integration.py  # integration only
+uv run pytest -q -k "test_happy_path_to_completed"       # single test
 ```
 
-## CLI Auth Check
+## CLI Auth
+
+Each CLI manages its own authentication. The `/health/readiness` endpoint reports current auth status.
 
 ```bash
 # Claude
 claude auth status
-claude auth login    # nếu chưa login
+claude auth login
 
 # Codex
 codex login status
-codex login --device-auth
+codex login --device-auth       # or: codex login --with-api-key
 
-# Kiro (nếu dùng)
+# Kiro
 kiro-cli auth login
 
-# Gemini (nếu dùng)
+# Gemini
 gemini auth login
 ```
 
-Khi CLI chưa auth, orchestrator append login hint vào task stderr để operator biết cần làm gì.
+When a CLI is not authenticated, the orchestrator appends the relevant login command to the task's `last_error` field so the operator knows what action to take.
 
-## Ghi chú
+## Notes
 
-- Coder delegate hoàn toàn cho CLI — không có logic viết code trong Python
-- Reviewer phân tích output của coder và trả về decision dạng keyword
-- Retry loop: CHANGES_REQUESTED → re-plan + re-code + re-review (không giữ state từ lần trước)
-- GitHub comment chỉ hoạt động khi token được set
-- `docs` và `memory` roles là optional — chưa được gọi trong pipeline hiện tại (hook điểm)
+- The coder delegates entirely to the CLI — no code-writing logic exists in Python
+- The retry loop re-runs the full pipeline (re-plan + re-code + re-review) without carrying over state from the previous attempt
+- `docs` and `memory` roles are configured but not yet wired into the pipeline (extension points)
+- GitHub comments are silently skipped when `GITHUB_TOKEN` is not set
